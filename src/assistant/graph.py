@@ -12,6 +12,8 @@ from assistant.utils import deduplicate_and_format_sources, tavily_search, forma
 from assistant.state import SummaryState, SummaryStateInput, SummaryStateOutput
 from assistant.prompts import query_writer_instructions, summarizer_instructions, reflection_instructions
 
+from assistant.nodes import local_rag_node
+
 # Nodes
 def generate_query(state: SummaryState, config: RunnableConfig):
     """ Generate a query for web search """
@@ -68,18 +70,30 @@ def summarize_sources(state: SummaryState, config: RunnableConfig):
     # Most recent web research
     most_recent_web_research = state.web_research_results[-1]
 
+    # Local RAG context
+    local_context = state.local_context
+    
+    print(f"[summarize_sources] Local context length: {len(local_context)} characters")
+    print(f"[summarize_sources] Web research length: {len(most_recent_web_research)} characters")
+    if existing_summary:
+        print(f"[summarize_sources] Existing summary length: {len(existing_summary)} characters")
+
     # Build the human message
     if existing_summary:
         human_message_content = (
             f"<User Input> \n {state.research_topic} \n <User Input>\n\n"
             f"<Existing Summary> \n {existing_summary} \n <Existing Summary>\n\n"
+            f"<Local Knowledge Base> \n {local_context} \n <Local Knowledge Base>\n\n"
             f"<New Search Results> \n {most_recent_web_research} \n <New Search Results>"
         )
     else:
         human_message_content = (
             f"<User Input> \n {state.research_topic} \n <User Input>\n\n"
+            f"<Local Knowledge Base> \n {local_context} \n <Local Knowledge Base>\n\n"
             f"<Search Results> \n {most_recent_web_research} \n <Search Results>"
         )
+
+    print(f"[summarize_sources] Total prompt length: {len(human_message_content)} characters")
 
     # Run the LLM
     configurable = Configuration.from_runnable_config(config)
@@ -90,6 +104,7 @@ def summarize_sources(state: SummaryState, config: RunnableConfig):
     )
 
     running_summary = result.content
+    print(f"[summarize_sources] Generated summary length: {len(running_summary)} characters")
 
     # TODO: This is a hack to remove the <think> tags w/ Deepseek models
     # It appears very challenging to prompt them out of the responses
@@ -132,18 +147,19 @@ def finalize_summary(state: SummaryState):
     state.running_summary = f"## Summary\n\n{state.running_summary}\n\n ### Sources:\n{all_sources}"
     return {"running_summary": state.running_summary}
 
-def route_research(state: SummaryState, config: RunnableConfig) -> Literal["finalize_summary", "web_research"]:
+def route_research(state: SummaryState, config: RunnableConfig) -> Literal["finalize_summary", "local_rag"]:
     """ Route the research based on the follow-up query """
 
     configurable = Configuration.from_runnable_config(config)
     if state.research_loop_count <= int(configurable.max_web_research_loops):
-        return "web_research"
+        return "local_rag"
     else:
         return "finalize_summary"
 
 # Add nodes and edges
 builder = StateGraph(SummaryState, input=SummaryStateInput, output=SummaryStateOutput, config_schema=Configuration)
 builder.add_node("generate_query", generate_query)
+builder.add_node("local_rag", local_rag_node)
 builder.add_node("web_research", web_research)
 builder.add_node("summarize_sources", summarize_sources)
 builder.add_node("reflect_on_summary", reflect_on_summary)
@@ -151,7 +167,8 @@ builder.add_node("finalize_summary", finalize_summary)
 
 # Add edges
 builder.add_edge(START, "generate_query")
-builder.add_edge("generate_query", "web_research")
+builder.add_edge("generate_query", "local_rag")
+builder.add_edge("local_rag", "web_research")
 builder.add_edge("web_research", "summarize_sources")
 builder.add_edge("summarize_sources", "reflect_on_summary")
 builder.add_conditional_edges("reflect_on_summary", route_research)

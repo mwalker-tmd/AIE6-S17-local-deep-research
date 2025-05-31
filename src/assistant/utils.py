@@ -4,6 +4,9 @@ from typing import Dict, Any, List, Optional
 from langsmith import traceable
 from tavily import TavilyClient
 from duckduckgo_search import DDGS
+from langchain_qdrant import Qdrant
+from langchain_ollama import OllamaEmbeddings
+from qdrant_client import QdrantClient
 
 def deduplicate_and_format_sources(search_response, max_tokens_per_source, include_raw_content=False):
     """
@@ -226,3 +229,12 @@ def perplexity_search(query: str, perplexity_search_loop_count: int) -> Dict[str
         })
     
     return {"results": results}
+
+def get_local_rag_retriever():
+    embedding = OllamaEmbeddings(model="mxbai-embed-large")
+    vectorstore = Qdrant(
+        client=QdrantClient(url="http://localhost:6333"),
+        collection_name="ollama_local_rag",
+        embeddings=embedding,
+    )
+    return vectorstore.as_retriever()
