@@ -1,5 +1,9 @@
+import logging
 from assistant.utils import get_local_rag_retriever
 from assistant.state import SummaryState
+
+# Configure logging
+logger = logging.getLogger(__name__)
 
 retriever = get_local_rag_retriever()
 
@@ -14,16 +18,16 @@ def local_rag_node(state: SummaryState) -> dict:
         dict: Dictionary containing the local context
     """
     if not state.search_query:
-        print("[local_rag_node] No search query found in state, returning empty context")
+        logger.info("[local_rag_node] No search query found in state, returning empty context")
         return {"local_context": ""}
 
     try:
-        print(f"[local_rag_node] Searching local RAG with query: {state.search_query}")
+        logger.info(f"[local_rag_node] Searching local RAG with query: {state.search_query}")
         docs = retriever.invoke(state.search_query)
         combined = "\n\n".join([doc.page_content for doc in docs])
-        print(f"[local_rag_node] Found {len(docs)} relevant documents")
-        print(f"[local_rag_node] Combined context length: {len(combined)} characters")
+        logger.info(f"[local_rag_node] Found {len(docs)} relevant documents")
+        logger.info(f"[local_rag_node] Combined context length: {len(combined)} characters")
         return {"local_context": combined}
     except Exception as e:
-        print(f"[local_rag_node error] {e}")
+        logger.error(f"[local_rag_node error] {e}")
         return {"local_context": ""}
