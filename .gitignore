@@ -5,3 +5,8 @@ __pycache__/
 *.egg-info
 *.pckl
 .langgraph_api/
+# Coverage files
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
