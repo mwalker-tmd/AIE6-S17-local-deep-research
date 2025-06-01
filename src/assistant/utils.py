@@ -4,6 +4,9 @@ from typing import Dict, Any, List, Optional
 from langsmith import traceable
 from tavily import TavilyClient
 from duckduckgo_search import DDGS
+from langchain_qdrant import QdrantVectorStore
+from langchain_ollama import OllamaEmbeddings
+from qdrant_client import QdrantClient
 
 def deduplicate_and_format_sources(search_response, max_tokens_per_source, include_raw_content=False):
     """
@@ -79,6 +82,7 @@ def duckduckgo_search(query: str, max_results: int = 3, fetch_full_page: bool = 
     Args:
         query (str): The search query to execute
         max_results (int): Maximum number of results to return
+        fetch_full_page (bool): Whether to fetch the full page content
         
     Returns:
         dict: Search response containing:
@@ -88,49 +92,63 @@ def duckduckgo_search(query: str, max_results: int = 3, fetch_full_page: bool = 
                 - content (str): Snippet/summary of the content
                 - raw_content (str): Same as content since DDG doesn't provide full page content
     """
-    try:
-        with DDGS() as ddgs:
-            results = []
-            search_results = list(ddgs.text(query, max_results=max_results))
-            
-            for r in search_results:
-                url = r.get('href')
-                title = r.get('title')
-                content = r.get('body')
+    import time
+    max_retries = 3
+    retry_delay = 2  # seconds
+    
+    for attempt in range(max_retries):
+        try:
+            with DDGS() as ddgs:
+                results = []
+                search_results = list(ddgs.text(query, max_results=max_results))
                 
-                if not all([url, title, content]):
-                    print(f"Warning: Incomplete result from DuckDuckGo: {r}")
-                    continue
+                for r in search_results:
+                    url = r.get('href')
+                    title = r.get('title')
+                    content = r.get('body')
+                    
+                    if not all([url, title, content]):
+                        print(f"Warning: Incomplete result from DuckDuckGo: {r}")
+                        continue
 
-                raw_content = content
-                if fetch_full_page:
-                    try:
-                        # Try to fetch the full page content using curl
-                        import urllib.request
-                        from bs4 import BeautifulSoup
+                    raw_content = content
+                    if fetch_full_page:
+                        try:
+                            # Try to fetch the full page content using curl
+                            import urllib.request
+                            from bs4 import BeautifulSoup
 
-                        response = urllib.request.urlopen(url)
-                        html = response.read()
-                        soup = BeautifulSoup(html, 'html.parser')
-                        raw_content = soup.get_text()
-                        
-                    except Exception as e:
-                        print(f"Warning: Failed to fetch full page content for {url}: {str(e)}")
+                            response = urllib.request.urlopen(url)
+                            html = response.read()
+                            soup = BeautifulSoup(html, 'html.parser')
+                            raw_content = soup.get_text()
+                            
+                        except Exception as e:
+                            print(f"Warning: Failed to fetch full page content for {url}: {str(e)}")
+                    
+                    # Add result to list
+                    result = {
+                        "title": title,
+                        "url": url,
+                        "content": content,
+                        "raw_content": raw_content
+                    }
+                    results.append(result)
                 
-                # Add result to list
-                result = {
-                    "title": title,
-                    "url": url,
-                    "content": content,
-                    "raw_content": raw_content
-                }
-                results.append(result)
-            
-            return {"results": results}
-    except Exception as e:
-        print(f"Error in DuckDuckGo search: {str(e)}")
-        print(f"Full error details: {type(e).__name__}")
-        return {"results": []}
+                return {"results": results}
+                
+        except Exception as e:
+            if "Ratelimit" in str(e) and attempt < max_retries - 1:
+                print(f"DuckDuckGo rate limit hit, retrying in {retry_delay} seconds...")
+                time.sleep(retry_delay)
+                retry_delay *= 2  # Exponential backoff
+                continue
+            else:
+                print(f"Error in DuckDuckGo search: {str(e)}")
+                print(f"Full error details: {type(e).__name__}")
+                return {"results": []}
+    
+    return {"results": []}  # Return empty results if all retries failed
 
 @traceable
 def tavily_search(query, include_raw_content=True, max_results=3):
@@ -226,3 +244,32 @@ def perplexity_search(query: str, perplexity_search_loop_count: int) -> Dict[str
         })
     
     return {"results": results}
+
+def get_local_rag_retriever():
+    """Get or create a local RAG retriever using Qdrant and Ollama embeddings.
+    
+    Returns:
+        BaseRetriever: A retriever instance for local RAG operations
+    """
+    embedding = OllamaEmbeddings(model="mxbai-embed-large")
+    client = QdrantClient(url="http://localhost:6333")
+    
+    # Create collection if it doesn't exist
+    try:
+        client.get_collection("DnD_Documents")
+    except Exception:
+        print("[local_rag] Creating new Qdrant collection: DnD_Documents")
+        client.create_collection(
+            collection_name="DnD_Documents",
+            vectors_config={
+                "size": 1024,  # mxbai-embed-large embedding size
+                "distance": "Cosine"
+            }
+        )
+    
+    vectorstore = QdrantVectorStore(
+        client=client,
+        collection_name="DnD_Documents",
+        embedding=embedding,
+    )
+    return vectorstore.as_retriever()
